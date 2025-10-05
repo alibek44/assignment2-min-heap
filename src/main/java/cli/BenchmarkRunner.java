@@ -3,6 +3,8 @@ package cli;
 import algorithms.MinHeap;
 import metrics.PerformanceTracker;
 
+import java.io.File;
+import java.io.PrintWriter;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,69 +19,70 @@ public class BenchmarkRunner {
         SecureRandom rnd = new SecureRandom();
         rnd.setSeed(cfg.seed);
 
-        System.out.println("seed,n,build_ns,ops,op_ns,comparisons,array_accesses,swaps,mem_bytes,extracts,decreases,inserts");
+        String fileName = "results.csv";
 
-        for (int n : cfg.sizes) {
-            int[] initial = new int[n];
-            for (int i = 0; i < n; i++) initial[i] = rnd.nextInt();
+        try (PrintWriter writer = new PrintWriter(new File(fileName))) {
+            writer.println("seed,n,build_ns,ops,op_ns,comparisons,array_accesses,swaps,mem_bytes,extracts,decreases,inserts");
 
-            PerformanceTracker buildTracker = new PerformanceTracker();
-            MinHeap heap = MinHeap.heapify(initial, buildTracker);
-            long buildNs = buildTracker.getElapsedNs();
+            for (int n : cfg.sizes) {
+                int[] initial = new int[n];
+                for (int i = 0; i < n; i++) initial[i] = rnd.nextInt();
 
-            // Track ids that have been issued (may be inactive after extract)
-            List<Integer> ids = new ArrayList<>(n);
-            for (int i = 0; i < n; i++) ids.add(i);
+                PerformanceTracker buildTracker = new PerformanceTracker();
+                MinHeap heap = MinHeap.heapify(initial, buildTracker);
+                long buildNs = buildTracker.getElapsedNs();
 
-            PerformanceTracker opsTracker = new PerformanceTracker();
-            opsTracker.start();
+                List<Integer> ids = new ArrayList<>(n);
+                for (int i = 0; i < n; i++) ids.add(i);
 
-            int performedDec = 0, performedExt = 0, performedIns = 0;
+                PerformanceTracker opsTracker = new PerformanceTracker();
+                opsTracker.start();
 
-            for (int i = 0; i < cfg.ops; i++) {
-                double u = rnd.nextDouble();
+                int performedDec = 0, performedExt = 0, performedIns = 0;
 
-                // Prefer decreaseKey with probability decRatio, but only if heap not empty
-                if (u < cfg.decRatio && heap.size() > 0) {
-                    // Try a few random ids; skip if invalid
-                    int tries = 3;
-                    while (tries-- > 0 && heap.size() > 0) {
-                        int pick = Math.abs(rnd.nextInt()) % Math.max(ids.size(), 1);
-                        int id = ids.get(pick);
+                for (int i = 0; i < cfg.ops; i++) {
+                    double u = rnd.nextDouble();
+
+                    // decreaseKey operation
+                    if (u < cfg.decRatio && heap.size() > 0) {
+                        int id = ids.get(Math.abs(rnd.nextInt()) % Math.max(ids.size(), 1));
                         int newKey = Math.abs(rnd.nextInt()) % 100;
                         try {
                             heap.decreaseKey(id, newKey);
                             performedDec++;
-                            break;
-                        } catch (IllegalArgumentException ignored) {
-                            // id not active; try another
-                        }
+                        } catch (IllegalArgumentException ignored) {}
                     }
-                    continue;
+
+                    // extractMin or insert
+                    else if (rnd.nextBoolean() && heap.size() > 0) {
+                        heap.extractMin();
+                        performedExt++;
+                    } else {
+                        int id = heap.insert(rnd.nextInt());
+                        ids.add(id);
+                        performedIns++;
+                    }
                 }
 
-                // Otherwise half extract, half insert — but never extract if empty
-                boolean doExtract = rnd.nextBoolean();
-                if (doExtract && heap.size() > 0) {
-                    heap.extractMin();
-                    performedExt++;
-                } else {
-                    int newId = heap.insert(rnd.nextInt());
-                    ids.add(newId);
-                    performedIns++;
-                }
+                opsTracker.stop();
+                opsTracker.add(buildTracker);
+
+                writer.printf(Locale.US,
+                        "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d%n",
+                        cfg.seed, n, buildNs, cfg.ops, opsTracker.getElapsedNs(),
+                        opsTracker.getComparisons(), opsTracker.getArrayAccesses(), opsTracker.getSwaps(),
+                        Math.max(0, opsTracker.getMemBytes()), performedExt, performedDec, performedIns
+                );
+
+                System.out.printf("✅ Completed n=%d → extracts=%d, decreases=%d, inserts=%d%n",
+                        n, performedExt, performedDec, performedIns);
             }
 
-            opsTracker.stop();
-            opsTracker.add(buildTracker);
+            System.out.println("📁 Results saved automatically to " + fileName);
 
-            System.out.printf(Locale.US,
-                    "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d%n",
-                    cfg.seed, n, buildNs, cfg.ops, opsTracker.getElapsedNs(),
-                    opsTracker.getComparisons(), opsTracker.getArrayAccesses(), opsTracker.getSwaps(),
-                    Math.max(0, opsTracker.getMemBytes()),
-                    performedExt, performedDec, performedIns
-            );
+        } catch (Exception e) {
+            System.err.println("❌ Error writing CSV: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -97,9 +100,11 @@ public class BenchmarkRunner {
                 case "--dec-ratio" -> dec = Double.parseDouble(args[++i]);
             }
         }
+
         String[] parts = sizes.split(",");
         int[] sz = new int[parts.length];
         for (int i = 0; i < parts.length; i++) sz[i] = Integer.parseInt(parts[i].trim());
+
         return new Config(sz, seed, ops, dec);
     }
 }
